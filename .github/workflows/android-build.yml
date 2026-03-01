@@ -1,5 +1,8 @@
 name: Build Android APK
 
+permissions:
+  contents: write   # REQUIRED for creating releases
+
 on:
   push:
     branches: [ main ]
@@ -46,11 +49,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------
+      # Checkout
+      # -------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
+      # -------------------------
+      # Determine Build Type
+      # -------------------------
       - name: Determine Build Type
         id: build_type
         run: |
@@ -60,6 +67,9 @@ jobs:
             echo "type=debug" >> $GITHUB_OUTPUT
           fi
 
+      # -------------------------
+      # Get Version
+      # -------------------------
       - name: Get Version
         id: version
         run: |
@@ -74,36 +84,47 @@ jobs:
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
 
+      # -------------------------
+      # Setup Java
+      # -------------------------
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
+          java-version: '17'
           cache: gradle
 
+      # -------------------------
+      # Setup Gradle
+      # -------------------------
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
+      # -------------------------
+      # Make Gradle Executable
+      # -------------------------
       - name: Grant execute permission for gradlew
         run: chmod +x app/gradlew
 
+      # -------------------------
+      # Build APK(s)
+      # -------------------------
       - name: Build APK(s)
         working-directory: ./app
         run: |
           BUILD_TYPE="${{ steps.build_type.outputs.type }}"
 
-          case "$BUILD_TYPE" in
-            debug)
-              ./gradlew assembleDebug --stacktrace
-              ;;
-            release)
-              ./gradlew assembleRelease --stacktrace
-              ;;
-            both)
-              ./gradlew assembleDebug assembleRelease --stacktrace
-              ;;
-          esac
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            ./gradlew assembleDebug --stacktrace
+          elif [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            ./gradlew assembleDebug assembleRelease --stacktrace
+          fi
 
+      # -------------------------
+      # Prepare Debug APK
+      # -------------------------
       - name: Prepare Debug APK
         id: debug_apk
         if: steps.build_type.outputs.type == 'debug' || steps.build_type.outputs.type == 'both'
@@ -117,6 +138,9 @@ jobs:
             echo "debug_apk_name=$DEBUG_NAME" >> $GITHUB_OUTPUT
           fi
 
+      # -------------------------
+      # Prepare Release APK
+      # -------------------------
       - name: Prepare Release APK
         id: release_apk
         if: steps.build_type.outputs.type == 'release' || steps.build_type.outputs.type == 'both'
@@ -130,6 +154,9 @@ jobs:
             echo "release_apk_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
           fi
 
+      # -------------------------
+      # Upload Artifacts
+      # -------------------------
       - name: Upload Debug APK
         if: steps.debug_apk.outputs.debug_apk_name != ''
         uses: actions/upload-artifact@v4
@@ -146,6 +173,9 @@ jobs:
           path: ./${{ steps.release_apk.outputs.release_apk_name }}
           retention-days: 30
 
+      # -------------------------
+      # Create GitHub Release
+      # -------------------------
       - name: Create Release
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'yes'
         uses: softprops/action-gh-release@v1
