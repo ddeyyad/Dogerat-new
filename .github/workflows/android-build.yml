@@ -1,0 +1,219 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'APK build type'
+        required: true
+        default: 'debug'
+        type: choice
+        options: ['debug', 'release', 'both']
+      create_release:
+        description: 'Create a GitHub release?'
+        required: true
+        default: 'yes'
+        type: choice
+        options: ['yes', 'no']
+      custom_version:
+        description: 'Custom version tag (leave empty to auto-detect)'
+        required: false
+        default: ''
+        type: string
+      prerelease:
+        description: 'Mark as pre-release?'
+        required: true
+        default: 'no'
+        type: choice
+        options: ['yes', 'no']
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Version
+        id: version
+        run: |
+          VERSION_NAME=$(grep "versionName" ./app/app/build.gradle | sed 's/.*versionName "//' | sed 's/".*//')
+          VERSION_CODE=$(grep "versionCode" ./app/app/build.gradle | sed 's/.*versionCode //')
+          
+          # Check for custom version
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          if [ -n "$CUSTOM_VERSION" ]; then
+            echo "Using custom version: $CUSTOM_VERSION"
+            VERSION_NAME="$CUSTOM_VERSION"
+          fi
+          
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION_NAME (code: $VERSION_CODE)"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.2'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x app/gradlew
+
+      - name: Build APKs
+        working-directory: ./app
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          echo "Building APK type: $BUILD_TYPE"
+          
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            echo "Building Debug APK..."
+            ./gradlew assembleDebug --stacktrace
+          elif [ "$BUILD_TYPE" = "release" ]; then
+            echo "Building Release APK..."
+            ./gradlew assembleRelease --stacktrace
+          else
+            echo "Building both Debug and Release APK..."
+            ./gradlew assembleDebug assembleRelease --stacktrace
+          fi
+
+      - name: Prepare Debug APK
+        if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both' || github.event_name == 'push'
+        id: debug_apk
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          
+          DEBUG_APK=$(find ./app/app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1 || true)
+          
+          if [ -n "$DEBUG_APK" ]; then
+            DEBUG_NAME="DogeRat-v${VERSION}-debug.apk"
+            cp "$DEBUG_APK" "./$DEBUG_NAME"
+            echo "debug_apk_name=$DEBUG_NAME" >> $GITHUB_OUTPUT
+            echo "Created Debug APK: $DEBUG_NAME"
+            ls -la "./$DEBUG_NAME"
+          else
+            echo "No Debug APK found"
+          fi
+
+      - name: Prepare Release APK
+        if: github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both'
+        id: release_apk
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          
+          RELEASE_APK=$(find ./app/app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -1 || true)
+          
+          if [ -n "$RELEASE_APK" ]; then
+            RELEASE_NAME="DogeRat-v${VERSION}-release.apk"
+            cp "$RELEASE_APK" "./$RELEASE_NAME"
+            echo "release_apk_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+            echo "Created Release APK: $RELEASE_NAME"
+            ls -la "./$RELEASE_NAME"
+          else
+            echo "No Release APK found"
+          fi
+
+      - name: Upload Debug APK Artifact
+        if: steps.debug_apk.outputs.debug_apk_name != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.debug_apk.outputs.debug_apk_name }}
+          path: ./${{ steps.debug_apk.outputs.debug_apk_name }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Release APK Artifact
+        if: steps.release_apk.outputs.release_apk_name != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release_apk.outputs.release_apk_name }}
+          path: ./${{ steps.release_apk.outputs.release_apk_name }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'yes'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version_name }}
+          name: DogeRat v${{ steps.version.outputs.version_name }}
+          files: |
+            ./DogeRat-v${{ steps.version.outputs.version_name }}-debug.apk
+            ./DogeRat-v${{ steps.version.outputs.version_name }}-release.apk
+          prerelease: ${{ github.event.inputs.prerelease == 'yes' }}
+          generate_release_notes: true
+          body: |
+            ## 📱 DogeRat v${{ steps.version.outputs.version_name }}
+            
+            ### APK Information
+            - **Version Code:** ${{ steps.version.outputs.version_code }}
+            - **Android Target:** API 34 (Android 14+)
+            - **Min Android:** API 21 (Android 5.0)
+            
+            ### Downloads
+            - **Debug APK:** For testing purposes
+            - **Release APK:** Optimized and minified
+            
+            ### Installation
+            1. Download the APK
+            2. Enable "Install from unknown sources" in Android settings
+            3. Open the APK and install
+            4. Grant all required permissions
+            
+            ### Configuration
+            Configure the server URL in the app or use the **Deploy Server & Build APK** workflow for automatic configuration with tunnel URL.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version_name }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          CREATE_RELEASE="${{ github.event.inputs.create_release }}"
+          DEBUG_APK="${{ steps.debug_apk.outputs.debug_apk_name }}"
+          RELEASE_APK="${{ steps.release_apk.outputs.release_apk_name }}"
+          
+          echo "## 📱 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Type:** $BUILD_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Android Target:** API 34 (Android 14+)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### APK Files" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$DEBUG_APK" ]; then
+            echo "- ✅ **Debug APK:** \`$DEBUG_APK\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -n "$RELEASE_APK" ]; then
+            echo "- ✅ **Release APK:** \`$RELEASE_APK\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$CREATE_RELEASE" = "yes" ]; then
+            echo "### 📦 Release Created" >> $GITHUB_STEP_SUMMARY
+            echo "- **Tag:** v$VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "- **Download:** [Releases](../../releases/tag/v$VERSION)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📥 Download" >> $GITHUB_STEP_SUMMARY
+            echo "Download the APK from the **Artifacts** section below." >> $GITHUB_STEP_SUMMARY
+          fi

