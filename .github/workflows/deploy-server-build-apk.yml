@@ -70,7 +70,7 @@ jobs:
             fi
           fi
 
-      # NEW STEP: Check Telegram Configuration
+      # MODIFIED STEP: Check Telegram Configuration and STOP if missing
       - name: Check Telegram Configuration
         run: |
           BOT_TOKEN="${{ env.TELEGRAM_BOT_TOKEN }}"
@@ -80,32 +80,28 @@ jobs:
           if [ -z "$BOT_TOKEN" ] && [ -z "$CHAT_ID" ]; then
             MSG="⚠️ Configuration Incomplete: Please paste your **TELEGRAM_BOT_TOKEN** and **TELEGRAM_CHAT_ID** in repository secrets."
             echo "$MSG" >> $GITHUB_STEP_SUMMARY
-            echo "::warning::$MSG"
-            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
-            exit 0
+            echo "::error::$MSG"
+            exit 1
           fi
           
           # Case 2: Only Token is missing
           if [ -z "$BOT_TOKEN" ]; then
             MSG="⚠️ Missing Token: Please paste your **TELEGRAM_BOT_TOKEN** in repository secrets."
             echo "$MSG" >> $GITHUB_STEP_SUMMARY
-            echo "::warning::$MSG"
-            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
-            exit 0
+            echo "::error::$MSG"
+            exit 1
           fi
           
           # Case 3: Only Chat ID is missing
           if [ -z "$CHAT_ID" ]; then
             MSG="⚠️ Missing Chat ID: Please paste your **TELEGRAM_CHAT_ID** in repository secrets."
             echo "$MSG" >> $GITHUB_STEP_SUMMARY
-            echo "::warning::$MSG"
-            echo "STATUS=INCOMPLETE" >> $GITHUB_ENV
-            exit 0
+            echo "::error::$MSG"
+            exit 1
           fi
           
           # Case 4: All good
-          echo "✅ Telegram credentials found." >> $GITHUB_STEP_SUMMARY
-          echo "STATUS=READY" >> $GITHUB_ENV
+          echo "✅ Telegram credentials verified." >> $GITHUB_STEP_SUMMARY
 
       - name: Get version from build.gradle
         id: version
