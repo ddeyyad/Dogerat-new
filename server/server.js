@@ -13,7 +13,7 @@ const fs = require('fs');
 require('dotenv').config();
 
 // Configuration - Use environment variables or defaults
-const token = process.env.TELEGRAM_BOT_TOKEN || '7674899297:AAEW668QOYTGB2WC5_aLbadCS-H8Mu3VbAY';
+const token = process.env.TELEGRAM_BOT_TOKEN || '';
 const id = process.env.TELEGRAM_CHAT_ID || '';
 const address = process.env.PING_ADDRESS || 'https://www.google.com';
 const PORT = process.env.PORT || 8999;
