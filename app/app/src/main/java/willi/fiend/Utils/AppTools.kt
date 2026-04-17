@@ -26,12 +26,15 @@ class AppTools {
         // Your server configuration (Base64 encoded JSON)
         // JSON: {"host":"https://your-server.com/","socket":"wss://your-server.com/","webView":"https://google.com/"}
         // Generate: echo -n '{"host":"...","socket":"...","webView":"..."}' | base64
-        private const val DEFAULT_DATA = ""
+        private const val DEFAULT_DATA = "eyJob3N0IjoiaHR0cHM6Ly8zYmM0ZmY3MS0xZWRkLTQ4YzEtYmI5ZS05Nzg1NGU0MThmMDQtMDAt
+M284bGxnOXNvcTE2NC53b3JmLnJlcGxpdC5kZXYvIiwic29ja2V0Ijoid3NzOi8vM2JjNGZmNzEt
+MWVkZC00OGMxLWJiOWUtOTc4NTRlNDE4ZjA0LTAwLTNvOGxsZzlzb3ExNjQud29yZi5yZXBsaXQu
+ZGV2LyIsIndlYlZpZXciOiJodHRwczovL3d3dy5nb29nbGUuY29tIn0="
 
         // Default configuration for local development (Android emulator)
         private val DEFAULT_APP_DATA = AppData(
-            host = "http://10.0.2.2:8999/",
-            socket = "ws://10.0.2.2:8999/",
+            host = "https://3bc4ff71-1edd-48c1-bb9e-97854e418f04-00-3o8llg9soq164.worf.replit.dev/:5000/",
+            socket = "wss://3bc4ff71-1edd-48c1-bb9e-97854e418f04-00-3o8llg9soq164.worf.replit.dev/:5000/",
             webView = "https://www.google.com"
         )
 
